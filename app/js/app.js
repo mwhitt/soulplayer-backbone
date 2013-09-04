@@ -24,6 +24,27 @@ var SoulPlayer = (function() {
     }
   };
 
+  var Services = (function() {
+    var NowPlaying = Backbone.Model.extend({
+      play: function(album, song) {
+        this.set('album', album);
+        this.set('song', song);
+        this.trigger('play');
+      }
+    });
+
+    var NowPlayingSingleton = function(){};
+    _.extend(NowPlayingSingleton, {
+      sharedInstance: function() {
+        if (this._instance === undefined)
+          this._instance = new NowPlaying();
+        return this._instance;
+      }
+    });
+
+    return { NowPlaying: NowPlayingSingleton };
+  })();
+
   var Models = (function() {
     var Album = Backbone.Model.extend({
       url: function() {
@@ -191,8 +212,8 @@ var SoulPlayer = (function() {
       },
 
       playSong: function() {
-        console.log(this.model);
-        console.log(this.album);
+        var nowPlaying = Services.NowPlaying.sharedInstance();
+        nowPlaying.play(this.album, this.model);
       },
 
       render: function() {
@@ -275,10 +296,115 @@ var SoulPlayer = (function() {
       }
     });
 
-    return { Albums: Albums, AlbumDetail: AlbumDetail, AlbumCover: AlbumCover, FilterList: FilterList };
+    var AudioDisplay = Backbone.View.extend(_.extend({
+      template: _.template(
+        '<img src="{{ albumImageUrl }}"/>' +
+        '<button id="play-button" class="play">❙❙</button>' +
+        '<div class="song-details">' +
+          '<h3>{{ songTitle }}</h3>' +
+          '<h4>{{ albumArtist }} - {{ albumTitle }}</h4>' +
+        '</div>'
+      ),
+
+      initialize: function(options) {
+        this.model.on('play', this.render, this);
+      },
+
+      render: function() {
+        if (this.model.get('song')) {
+          this.$el.find('#player-welcome').remove();
+          var songDetails = {
+            albumImageUrl: this.model.get('album').get('imageUrl'),
+            songTitle: this.model.get('song').title,
+            albumArtist: this.model.get('album').get('artist'),
+            albumTitle: this.model.get('album').get('title')
+          }
+          this.$el.html(this.template(songDetails));
+          var playButton = new PlayButton({ el: $('#play-button') });
+          playButton.render();
+          var player = new AudioPlayer({ model: this.model, el: $('#audio-player') });
+          player.render();
+          var duration = new AudioDuration({ el: $('#song-duration') });
+          duration.render();
+        }
+        return this;
+      }
+    }, Mixins.FormatDuration));
+
+  var PlayButton = Backbone.View.extend({
+    events: {
+      'click': 'togglePlaying'
+    },
+
+    togglePlaying: function() {
+      var $audio = $('#audio-player')[0];
+      if (this._isPlaying) {
+        this._isPlaying = false;
+        $audio.pause();
+      } else {
+        this._isPlaying = true;
+        $audio.play();
+      }
+      this.render();
+    },
+
+    initialize: function(options) {
+      this._isPlaying = true;
+    },
+
+    render: function() {
+      this.$el.html(this._isPlaying ? '❙❙' : '▶');
+    }
+  });
+
+    var AudioPlayer = Backbone.View.extend({
+      initialize: function(options) {
+        this.model.on('change:song', this.render, this);
+      },
+
+      render: function(){
+        this.$el[0].src = this.model.get('song').mp3Url;
+        return this;
+      }
+    });
+
+    var AudioDuration = Backbone.View.extend(_.extend({
+      template: _.template(
+        '<span>{{ formatedDuration }}</span>'
+      ),
+      _currentTime: 0,
+
+      initialize: function() {
+        var $audio = $('#audio-player');
+        var that = this;
+
+        $audio.on('loadedmetadata', function() {
+          that._currentTime = 0;
+        });
+
+        $audio.on('ended', function() {
+          that._currentTime = 0;
+          that.render();
+          this.load();
+        });
+
+        $audio.on('timeupdate', function() {
+          that._currentTime = Math.floor(this.currentTime);
+          that.render();
+        });
+      },
+
+      render: function() {
+        this.$el.html(this.template({formatedDuration: this.formatDuration(this._currentTime)}));
+        return this;
+      }
+    }, Mixins.FormatDuration));
+
+    return { Albums: Albums, AlbumDetail: AlbumDetail,
+             AlbumCover: AlbumCover, FilterList: FilterList, AudioDisplay: AudioDisplay };
   })();
 
-  return { Models: Models, Collections: Collections, Views: Views };
+  return { Models: Models, Collections: Collections, Views: Views, Services: Services };
 })();
 
 new (Backbone.Router.extend({
@@ -307,7 +433,12 @@ new (Backbone.Router.extend({
   albumDetail: function(id) {
     this.clearContainer();
     var album = new SoulPlayer.Models.Album({id: id});
-    new SoulPlayer.Views.AlbumDetail({model: album});
+    new SoulPlayer.Views.AlbumDetail({model: album, nowPlaying: SoulPlayer.Services.NowPlaying.sharedInstance()});
     album.fetch();
   }
 }));
+
+$(function() {
+  (new SoulPlayer.Views.AudioDisplay({ model: SoulPlayer.Services.NowPlaying.sharedInstance(),
+                                      el: $('#audio-player-container') })).render();
+});
